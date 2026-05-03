@@ -1,0 +1,11 @@
+*.tgz
+*.tar.gz
+TA-trustmodel-*.zip
+appinspect_report*.html
+appinspect_report*.json
+.DS_Store
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+local/
