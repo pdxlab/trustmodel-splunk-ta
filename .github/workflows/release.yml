@@ -1,0 +1,110 @@
+name: Release TA
+
+# Builds the TA tarball and uploads it to GCS.
+#
+#   gs://${GCS_BUCKET}/splunk-ta/TA-trustmodel-${TAG}.tar.gz   (versioned, immutable)
+#   gs://${GCS_BUCKET}/splunk-ta/TA-trustmodel-latest.tar.gz   (overwritten each release)
+#   gs://${GCS_BUCKET}/splunk-ta/latest.json                   (sidecar metadata)
+#
+# Aurora-gateway exposes GET /api/v1/splunk/ta-download/ which mints a signed
+# URL for the latest tarball and returns it together with the version metadata
+# read from latest.json.
+#
+# Triggered on tag push (v*) — release flow is:
+#   git tag v1.0.0 && git push --tags
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  # Required for google-github-actions/auth via Workload Identity Federation.
+  # If you fall back to a JSON key in `secrets.GCP_SA_KEY`, this can be removed.
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GCS_BUCKET: ${{ vars.GCS_BUCKET }}
+      GCS_PREFIX: splunk-ta
+      ASSET_BASENAME: TA-trustmodel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="dev-${GITHUB_SHA::7}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}"
+
+      - name: Build tarball
+        run: |
+          TAR="${ASSET_BASENAME}-${{ steps.version.outputs.version }}.tar.gz"
+          tar --exclude='.git' --exclude='.github' -czf "${TAR}" TA-trustmodel/
+          ls -lh "${TAR}"
+          echo "TAR=${TAR}" >> "$GITHUB_ENV"
+
+      - name: AppInspect (required)
+        # Splunk's static analyzer. Same gate Splunk Cloud runs at upload time
+        # — if this fails, customers can't install on Splunk Cloud either.
+        # Use --included-tags cloud so we apply the strictest checks Cloud
+        # tenants enforce. Failure on any check blocks the release.
+        run: |
+          pip install splunk-appinspect
+          splunk-appinspect inspect "${TAR}" \
+            --mode test \
+            --included-tags cloud \
+            --output-file appinspect-report.json
+      - name: Upload AppInspect report
+        # Always upload, even on failure, so we can debug from the run.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appinspect-report
+          path: appinspect-report.json
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          # Preferred: Workload Identity Federation (no long-lived keys).
+          # Set repo variables WIF_PROVIDER and WIF_SERVICE_ACCOUNT to enable.
+          # Falls back to a JSON key in secrets.GCP_SA_KEY if WIF isn't configured.
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Upload to GCS
+        run: |
+          VERSIONED="gs://${GCS_BUCKET}/${GCS_PREFIX}/${ASSET_BASENAME}-${{ steps.version.outputs.version }}.tar.gz"
+          LATEST="gs://${GCS_BUCKET}/${GCS_PREFIX}/${ASSET_BASENAME}-latest.tar.gz"
+          META="gs://${GCS_BUCKET}/${GCS_PREFIX}/latest.json"
+
+          gcloud storage cp "${TAR}" "${VERSIONED}"
+          gcloud storage cp "${TAR}" "${LATEST}"
+
+          cat > latest.json <<EOF
+          {
+            "version": "${{ steps.version.outputs.version }}",
+            "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "asset": "${ASSET_BASENAME}-latest.tar.gz",
+            "sha256": "$(sha256sum "${TAR}" | awk '{print $1}')",
+            "size_bytes": $(stat -c%s "${TAR}")
+          }
+          EOF
+          gcloud storage cp latest.json "${META}"
+
+          echo "Uploaded:"
+          echo "  ${VERSIONED}"
+          echo "  ${LATEST}"
+          echo "  ${META}"
