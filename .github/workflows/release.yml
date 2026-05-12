@@ -1,54 +1,88 @@
 name: Release TA
 
-# Builds the TA tarball and uploads it to GCS.
+# Builds the TA tarball, AppInspects it, and uploads to GCS via signed
+# URLs minted by aurora-gateway. No GCP credentials live in this repo —
+# the gateway handles all GCP auth via its existing cloud_storage layer.
 #
-#   gs://${GCS_BUCKET}/splunk-ta/TA-trustmodel-${TAG}.tar.gz   (versioned, immutable)
-#   gs://${GCS_BUCKET}/splunk-ta/TA-trustmodel-latest.tar.gz   (overwritten each release)
-#   gs://${GCS_BUCKET}/splunk-ta/latest.json                   (sidecar metadata)
+# Triggers:
+#   - Tag push (v*) → publishes to QA automatically (safe default)
+#   - workflow_dispatch → manual run; pick QA or PROD via the `env` input
 #
-# Aurora-gateway exposes GET /api/v1/splunk/ta-download/ which mints a signed
-# URL for the latest tarball and returns it together with the version metadata
-# read from latest.json.
+# Required repo configuration (Settings → Secrets and variables → Actions):
+#   Secrets: TRUSTMODEL_PUBLISH_JWT_QA, TRUSTMODEL_PUBLISH_JWT_PROD
+#   Variables: API_BASE_QA, API_BASE_PROD
 #
-# Triggered on tag push (v*) — release flow is:
-#   git tag v1.0.0 && git push --tags
+# GCS layout written by this workflow (via gateway-minted PUT URLs):
+#   splunk-ta/TA-trustmodel-<version>.tar.gz   (versioned, immutable)
+#   splunk-ta/TA-trustmodel-latest.tar.gz      (overwritten each release)
+#   splunk-ta/latest.json                      (sidecar: version, sha256, size)
 
 on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      env:
+        description: 'Target environment'
+        required: true
+        default: 'qa'
+        type: choice
+        options:
+          - qa
+          - prod
 
 permissions:
   contents: read
-  # Required for google-github-actions/auth via Workload Identity Federation.
-  # If you fall back to a JSON key in `secrets.GCP_SA_KEY`, this can be removed.
-  id-token: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      GCS_BUCKET: ${{ vars.GCS_BUCKET }}
-      GCS_PREFIX: splunk-ta
       ASSET_BASENAME: TA-trustmodel
+      # Tag push → qa; workflow_dispatch → user pick.
+      ENV_NAME: ${{ inputs.env || 'qa' }}
+      # Both creds in scope; only the one matching ENV_NAME is used at runtime.
+      API_BASE_QA: ${{ vars.API_BASE_QA }}
+      API_BASE_PROD: ${{ vars.API_BASE_PROD }}
+      PUBLISH_JWT_QA: ${{ secrets.TRUSTMODEL_PUBLISH_JWT_QA }}
+      PUBLISH_JWT_PROD: ${{ secrets.TRUSTMODEL_PUBLISH_JWT_PROD }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve version
-        id: version
+      - name: Resolve env + version
+        id: meta
         run: |
+          # Pick API base + JWT for the chosen env.
+          case "$ENV_NAME" in
+            qa)
+              API_BASE="$API_BASE_QA"
+              ;;
+            prod)
+              API_BASE="$API_BASE_PROD"
+              ;;
+            *)
+              echo "Unknown ENV_NAME=$ENV_NAME"; exit 1
+              ;;
+          esac
+          if [[ -z "$API_BASE" ]]; then
+            echo "API_BASE for env=$ENV_NAME is empty — set the matching repo variable"; exit 1
+          fi
+
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             VERSION="${GITHUB_REF#refs/tags/}"
           else
             VERSION="dev-${GITHUB_SHA::7}"
           fi
+
+          echo "env=${ENV_NAME}" >> "$GITHUB_OUTPUT"
+          echo "api_base=${API_BASE}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Version: ${VERSION}"
+          echo "Publishing version=${VERSION} to env=${ENV_NAME} via ${API_BASE}"
 
       - name: Build tarball
         run: |
-          TAR="${ASSET_BASENAME}-${{ steps.version.outputs.version }}.tar.gz"
+          TAR="${ASSET_BASENAME}-${{ steps.meta.outputs.version }}.tar.gz"
           # Excludes:
           #   .git/.github  — version control + CI metadata
           #   ._*           — macOS AppleDouble files (Splunk treats as prohibited)
@@ -60,7 +94,13 @@ jobs:
             --exclude='.DS_Store' \
             -czf "${TAR}" TA-trustmodel/
           ls -lh "${TAR}"
+          SHA256=$(sha256sum "${TAR}" | awk '{print $1}')
+          SIZE=$(stat -c%s "${TAR}")
           echo "TAR=${TAR}" >> "$GITHUB_ENV"
+          echo "SHA256=${SHA256}" >> "$GITHUB_ENV"
+          echo "SIZE=${SIZE}" >> "$GITHUB_ENV"
+          echo "sha256: ${SHA256}"
+          echo "size:   ${SIZE} bytes"
 
       - name: AppInspect (required)
         # Splunk's static analyzer. Same gate Splunk Cloud runs at upload time
@@ -73,47 +113,80 @@ jobs:
             --mode test \
             --included-tags cloud \
             --output-file appinspect-report.json
+
       - name: Upload AppInspect report
         # Always upload, even on failure, so we can debug from the run.
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: appinspect-report
+          name: appinspect-report-${{ steps.meta.outputs.env }}
           path: appinspect-report.json
 
-      - name: Authenticate to GCP
-        uses: google-github-actions/auth@v2
-        with:
-          # Preferred: Workload Identity Federation (no long-lived keys).
-          # Set repo variables WIF_PROVIDER and WIF_SERVICE_ACCOUNT to enable.
-          # Falls back to a JSON key in secrets.GCP_SA_KEY if WIF isn't configured.
-          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Upload to GCS
+      - name: Request upload URLs from aurora-gateway
+        id: urls
         run: |
-          VERSIONED="gs://${GCS_BUCKET}/${GCS_PREFIX}/${ASSET_BASENAME}-${{ steps.version.outputs.version }}.tar.gz"
-          LATEST="gs://${GCS_BUCKET}/${GCS_PREFIX}/${ASSET_BASENAME}-latest.tar.gz"
-          META="gs://${GCS_BUCKET}/${GCS_PREFIX}/latest.json"
+          # Select the JWT for the chosen env.
+          case "$ENV_NAME" in
+            qa)   JWT="$PUBLISH_JWT_QA" ;;
+            prod) JWT="$PUBLISH_JWT_PROD" ;;
+          esac
+          if [[ -z "$JWT" ]]; then
+            echo "Publisher JWT for env=$ENV_NAME is empty — set the matching repo secret"; exit 1
+          fi
 
-          gcloud storage cp "${TAR}" "${VERSIONED}"
-          gcloud storage cp "${TAR}" "${LATEST}"
+          REQ_BODY=$(jq -nc \
+            --arg v   "${{ steps.meta.outputs.version }}" \
+            --arg s   "$SHA256" \
+            --argjson z "$SIZE" \
+            '{version: $v, sha256: $s, size_bytes: $z}')
 
+          RESPONSE=$(curl -fsS -X POST \
+            "${{ steps.meta.outputs.api_base }}/api/v1/splunk/ta-upload-url/" \
+            -H "Authorization: Bearer $JWT" \
+            -H "Content-Type: application/json" \
+            -d "$REQ_BODY")
+
+          echo "$RESPONSE" | jq -r '"tarball_url=" + .tarball_url'   >> "$GITHUB_OUTPUT"
+          echo "$RESPONSE" | jq -r '"latest_url="  + .latest_url'    >> "$GITHUB_OUTPUT"
+          echo "$RESPONSE" | jq -r '"metadata_url=" + .metadata_url' >> "$GITHUB_OUTPUT"
+          echo "$RESPONSE" | jq '{tarball_path, latest_path, metadata_path, expires_in_seconds}'
+
+      - name: Upload to GCS via signed URLs
+        run: |
+          # Content-Type MUST match what the signed URL was minted with
+          # (unified_nimbus.put_signed_url hardcodes "image/jpeg"). GCS
+          # rejects with 403 on mismatch. The actual content is whatever
+          # we send — only the stored MIME metadata is "wrong", which is
+          # harmless because the FE downloads via fetch()→blob and the
+          # gateway reads bytes directly when serving latest.json.
+          CT="image/jpeg"
+
+          # Versioned tarball
+          curl -fsS -X PUT -H "Content-Type: $CT" \
+            --upload-file "${TAR}" \
+            "${{ steps.urls.outputs.tarball_url }}"
+
+          # 'Latest' alias — same bytes, different key
+          curl -fsS -X PUT -H "Content-Type: $CT" \
+            --upload-file "${TAR}" \
+            "${{ steps.urls.outputs.latest_url }}"
+
+          # Sidecar metadata read by the download endpoint
           cat > latest.json <<EOF
           {
-            "version": "${{ steps.version.outputs.version }}",
+            "version": "${{ steps.meta.outputs.version }}",
+            "env": "${{ steps.meta.outputs.env }}",
             "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "asset": "${ASSET_BASENAME}-latest.tar.gz",
-            "sha256": "$(sha256sum "${TAR}" | awk '{print $1}')",
-            "size_bytes": $(stat -c%s "${TAR}")
+            "sha256": "${SHA256}",
+            "size_bytes": ${SIZE}
           }
           EOF
-          gcloud storage cp latest.json "${META}"
+          curl -fsS -X PUT -H "Content-Type: $CT" \
+            --upload-file latest.json \
+            "${{ steps.urls.outputs.metadata_url }}"
 
-          echo "Uploaded:"
-          echo "  ${VERSIONED}"
-          echo "  ${LATEST}"
-          echo "  ${META}"
+          echo ""
+          echo "✅ Published version=${{ steps.meta.outputs.version }} to env=${{ steps.meta.outputs.env }}"
+          echo "   sha256: ${SHA256}"
+          echo "   size:   ${SIZE} bytes"
