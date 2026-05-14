@@ -146,28 +146,27 @@ jobs:
             -H "Content-Type: application/json" \
             -d "$REQ_BODY")
 
-          echo "$RESPONSE" | jq -r '"tarball_url=" + .tarball_url'   >> "$GITHUB_OUTPUT"
-          echo "$RESPONSE" | jq -r '"latest_url="  + .latest_url'    >> "$GITHUB_OUTPUT"
-          echo "$RESPONSE" | jq -r '"metadata_url=" + .metadata_url' >> "$GITHUB_OUTPUT"
+          echo "$RESPONSE" | jq -r '"tarball_url="           + .tarball_url'           >> "$GITHUB_OUTPUT"
+          echo "$RESPONSE" | jq -r '"latest_url="            + .latest_url'            >> "$GITHUB_OUTPUT"
+          echo "$RESPONSE" | jq -r '"metadata_url="          + .metadata_url'          >> "$GITHUB_OUTPUT"
+          echo "$RESPONSE" | jq -r '"tarball_content_type="  + .tarball_content_type'  >> "$GITHUB_OUTPUT"
+          echo "$RESPONSE" | jq -r '"metadata_content_type=" + .metadata_content_type' >> "$GITHUB_OUTPUT"
           echo "$RESPONSE" | jq '{tarball_path, latest_path, metadata_path, expires_in_seconds}'
 
       - name: Upload to GCS via signed URLs
         run: |
-          # Content-Type MUST match what the signed URL was minted with
-          # (unified_nimbus.put_signed_url hardcodes "image/jpeg"). GCS
-          # rejects with 403 on mismatch. The actual content is whatever
-          # we send — only the stored MIME metadata is "wrong", which is
-          # harmless because the FE downloads via fetch()→blob and the
-          # gateway reads bytes directly when serving latest.json.
-          CT="image/jpeg"
+          # GCS signed URLs include the Content-Type in the signature, so
+          # each PUT must send exactly the type the gateway minted for.
+          TARBALL_CT="${{ steps.urls.outputs.tarball_content_type }}"
+          META_CT="${{ steps.urls.outputs.metadata_content_type }}"
 
           # Versioned tarball
-          curl -fsS -X PUT -H "Content-Type: $CT" \
+          curl -fsS -X PUT -H "Content-Type: $TARBALL_CT" \
             --upload-file "${TAR}" \
             "${{ steps.urls.outputs.tarball_url }}"
 
           # 'Latest' alias — same bytes, different key
-          curl -fsS -X PUT -H "Content-Type: $CT" \
+          curl -fsS -X PUT -H "Content-Type: $TARBALL_CT" \
             --upload-file "${TAR}" \
             "${{ steps.urls.outputs.latest_url }}"
 
@@ -182,7 +181,7 @@ jobs:
             "size_bytes": ${SIZE}
           }
           EOF
-          curl -fsS -X PUT -H "Content-Type: $CT" \
+          curl -fsS -X PUT -H "Content-Type: $META_CT" \
             --upload-file latest.json \
             "${{ steps.urls.outputs.metadata_url }}"
 
