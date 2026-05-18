@@ -1,0 +1,4 @@
+<nav search_view="search" color="#1976D2">
+  <view name="trustmodel_ai_risk" default="true" />
+  <view name="search" />
+</nav>

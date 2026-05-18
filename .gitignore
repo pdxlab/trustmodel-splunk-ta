@@ -1,11 +1,21 @@
+# Build artifacts (tarballs are built per release / by CI)
 *.tgz
 *.tar.gz
 TA-trustmodel-*.zip
+
+# AppInspect reports (generated each run; uploaded as CI artifact)
+appinspect-report.json
 appinspect_report*.html
 appinspect_report*.json
+
+# macOS metadata
 .DS_Store
+._*
+
+# IDE / editor
 .idea/
 .vscode/
+
+# Python
 __pycache__/
 *.pyc
-local/
