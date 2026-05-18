@@ -26,12 +26,12 @@
       "Performance": "5.0"
     },
     "license": {
-      "name": "Splunk Enterprise Software License Agreement",
-      "uri": "https://trustmodel.ai/splunk/eula"
+      "name": "TrustModel Splunk Add-on License",
+      "uri": "https://raw.githubusercontent.com/pdxlab/trustmodel-splunk-ta/main/LICENSE"
     },
     "privacyPolicy": {
       "name": "TrustModel Privacy Policy",
-      "uri": "https://trustmodel.ai/privacy"
+      "uri": "https://trustmodel.ai/privacy-policy"
     },
     "releaseNotes": {
       "name": "CHANGELOG.md",
