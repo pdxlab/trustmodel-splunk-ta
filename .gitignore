@@ -19,3 +19,6 @@ appinspect_report*.json
 # Python
 __pycache__/
 *.pyc
+
+#knowledge Base
+Splunk_KnowledgeBase/
