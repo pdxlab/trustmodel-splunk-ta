@@ -18,7 +18,7 @@ All notable changes to TA-trustmodel will be documented here. Format follows [Ke
 - `props.conf` simplified — KV_MODE=json auto-extracts nested
   `eval_meta.*` and `evidence.*` directly.
 - CIM compliance: strict on `Alerts` data model (`trustmodel:finding`),
-  loose on `Performance` (`trustmodel:eval`).
+  `trustmodel:eval` is not mapped to a CIM datamodel.
 - Time field anchored on top-level epoch `time` for both sourcetypes.
 
 ### Added (carried over from package skeleton)

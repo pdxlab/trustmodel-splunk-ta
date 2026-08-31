@@ -3,7 +3,6 @@
   "info": {
     "title": "TrustModel AI Assurance",
     "id": {
-      "group": null,
       "name": "TA-trustmodel",
       "version": "1.0.0"
     },
@@ -20,10 +19,6 @@
       "intendedAudience": "IT",
       "categories": ["IT Operations", "Security, Fraud & Compliance"],
       "developmentStatus": "Production/Stable"
-    },
-    "commonInformationModels": {
-      "Alerts": "5.0",
-      "Performance": "5.0"
     },
     "license": {
       "name": "TrustModel Splunk Add-on License",
@@ -42,10 +37,5 @@
   "tasks": null,
   "inputGroups": null,
   "incompatibleApps": null,
-  "platformRequirements": {
-    "splunk": {
-      "Enterprise": "9.0+"
-    }
-  },
   "targetWorkloads": ["_search_heads", "_indexers"]
 }

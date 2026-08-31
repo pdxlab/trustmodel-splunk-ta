@@ -16,7 +16,7 @@ Two sourcetypes only. Eval flavor (LLM, COTS, agentic_trace, DataScan) is carrie
 
 | Sourcetype | Description | CIM Datamodel |
 |---|---|---|
-| `trustmodel:eval` | Evaluation lifecycle event (one per terminal-state run, all flavors) | `Performance` (loose) |
+| `trustmodel:eval` | Evaluation lifecycle event (one per terminal-state run, all flavors) | _none_ |
 | `trustmodel:finding` | Detected risk / issue within an evaluation (PII, bias, proxy, hallucination, etc.) | `Alerts` (strict) |
 
 The `eval_source` field discriminates — possible values: `llm`, `cots`, `agentic_trace`, `datascan`. See TRUS-785 Confluence doc for full envelope, per-flavor `eval_meta` shapes, and per-dimension `evidence` shapes.
@@ -76,7 +76,9 @@ CIM field aliases on `trustmodel:finding` (CIM Alerts data model):
 | `Alerts.src_user` | `src_user` |
 | `Authentication.user` | `user` |
 
-`trustmodel:eval` has loose Performance compliance (`duration_seconds`).
+`trustmodel:eval` is intentionally not mapped to a CIM datamodel. Its events carry
+TrustModel-private tags (`trustmodel`, `ai_eval`) only, so they never enter a shared
+CIM dataset they don't fit.
 
 Full schema: see TRUS-785 Confluence doc.
 

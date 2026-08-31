@@ -58,7 +58,7 @@ Two sourcetypes only. Eval flavor (LLM, COTS, agentic_trace, DataScan) is carrie
 
 | Sourcetype | Description | CIM Datamodel |
 |---|---|---|
-| `trustmodel:eval` | Evaluation lifecycle (one per terminal-state run, all flavors) | Performance (loose) |
+| `trustmodel:eval` | Evaluation lifecycle (one per terminal-state run, all flavors) | none |
 | `trustmodel:finding` | Detected risk / issue within an evaluation (PII, bias, proxy, hallucination, etc.) | Alerts (strict) |
 
 Schema source-of-truth: TRUS-785 Confluence doc (TrustModel space → Integrations → Splunk → Event Schema v1.0).
